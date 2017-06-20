@@ -3,6 +3,7 @@ package com.kn.http;
 import java.io.BufferedInputStream;
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
+import java.io.Closeable;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
@@ -17,8 +18,10 @@ import java.util.Map;
 import java.util.Set;
 import java.util.zip.GZIPInputStream;
 
+import static java.util.Collections.emptyList;
+
 /**
- * Very very simple com.kn.http.HttpClient
+ * Very very simple HttpClient
  *
  * @author nk
  */
@@ -80,25 +83,43 @@ public final class HttpClient {
   private final Response doGet(HttpURLConnection connection) throws IOException {
     connection.setDoOutput(false);
 
-    Response response = new Response();
-    response.code = connection.getResponseCode();
-    response.inputStream = inputStream(connection);
-    response.headers = connection.getHeaderFields();
+    InputStream inputStream = null;
+    try {
+      Response response = new Response();
+      response.code = connection.getResponseCode();
+      response.inputStream = inputStream = inputStream(connection);
+      response.headers = connection.getHeaderFields();
 
-    return response;
+      return response;
+    } catch (IOException exception) {
+      closeQuietly(inputStream);
+      connection.disconnect();
+      throw exception;
+    }
   }
 
   private final Response doPost(HttpURLConnection connection, Request request) throws IOException {
     connection.setDoOutput(true);
 
-    copy(request.stream, connection.getOutputStream());
+    OutputStream outputStream = null;
+    InputStream inputStream = null;
 
-    Response response = new Response();
-    response.code = connection.getResponseCode();
-    response.inputStream = inputStream(connection);
-    response.headers = connection.getHeaderFields();
+    try {
+      outputStream = connection.getOutputStream();
+      copy(request.stream, outputStream);
 
-    return response;
+      Response response = new Response();
+      response.code = connection.getResponseCode();
+      response.inputStream = inputStream = inputStream(connection);
+      response.headers = connection.getHeaderFields();
+
+      return response;
+    } catch (IOException exception) {
+      closeQuietly(outputStream);
+      closeQuietly(inputStream);
+      connection.disconnect();
+      throw exception;
+    }
   }
 
   //TODO find out which stream better to provide to user
@@ -160,11 +181,11 @@ public final class HttpClient {
       }
 
       public Builder body(String value) {
-        byte[] bytes;
+        byte[] bytes = null;
         try {
           bytes = value.getBytes("UTF-8");
         } catch (UnsupportedEncodingException e) {
-          throw new RuntimeException(e);
+          rethrow(e);
         }
 
         stream = new ByteArrayInputStream(bytes);
@@ -201,11 +222,11 @@ public final class HttpClient {
         checkCondition();
 
         Request request = new Request();
-        URL url;
+        URL url = null;
         try {
           url = new URL(baseUrl + addParams());
         } catch (MalformedURLException e) {
-          throw new RuntimeException(e);
+          rethrow(e);
         }
         request.url = url;
         request.stream = stream;
@@ -244,8 +265,8 @@ public final class HttpClient {
     }
 
     public List<String> getHeaderFields(String headerName) {
-      List<String> h = this.headers.get(headerName);
-      return h == null ? Collections.emptyList() : h;
+      List<String> list = headers.get(headerName);
+      return list != null ? list : emptyList();
     }
 
     public String getHeaderField(String headerName) {
@@ -270,8 +291,9 @@ public final class HttpClient {
       try {
         return output.toString(charset);
       } catch (Exception e) {
-        throw new RuntimeException(e);
+        rethrow(e);
       }
+      return null;
     }
 
     public InputStream stream() {
@@ -328,13 +350,27 @@ public final class HttpClient {
     try {
       while ((read = input.read(buffer)) != -1) output.write(buffer, 0, read);
     } catch (IOException e) {
-      throw new RuntimeException(e);
+      rethrow(e);
     } finally {
+      closeQuietly(input);
+    }
+  }
+
+  static void closeQuietly(Closeable closeable) {
+    if (closeable != null) {
       try {
-        input.close();
-      } catch (IOException e) {
-        throw new RuntimeException(e);
+        closeable.close();
+      } catch (IOException ignored) {
       }
     }
+  }
+
+  static RuntimeException rethrow(Throwable throwable) {
+    sneakyThrow0(throwable);
+    throw null;
+  }
+
+  static <T extends Throwable> void sneakyThrow0(Throwable throwable) throws T {
+    throw (T) throwable;
   }
 }
