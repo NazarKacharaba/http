@@ -17,7 +17,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 
 public final class NetworkDispatcher {
   final HttpClient httpClient;
-  // TODO does not work properly when request's sizes become more than LinkedBlockingQueue's size
+  // TODO does not work properly when request's size become more than LinkedBlockingQueue's size
   private final ExecutorService service =
       new ThreadPoolExecutor(0, 6, 60, TimeUnit.SECONDS, new LinkedBlockingQueue<>(6),
           new ThreadFactory() {

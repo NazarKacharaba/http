@@ -244,13 +244,13 @@ public final class HttpClient {
 
       private void checkCondition() {
         if (method != HttpMethod.POST && stream != null) {
-          throw new IllegalArgumentException("Currently only POST supports body");
+          throw new IllegalStateException("Currently only POST supports body");
         }
         if (baseUrl == null) {
-          throw new IllegalArgumentException("Url must be set");
+          throw new IllegalStateException("Url must be set");
         }
         if (method == null) {
-          throw new IllegalArgumentException("Http method must be set");
+          throw new IllegalStateException("Http method must be set");
         }
       }
     }
@@ -290,7 +290,7 @@ public final class HttpClient {
       if (charset == null) return output.toString();
       try {
         return output.toString(charset);
-      } catch (Exception e) {
+      } catch (IOException e) {
         rethrow(e);
       }
       return null;

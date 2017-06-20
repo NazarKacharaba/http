@@ -8,7 +8,7 @@ import static com.kn.http.HttpClient.*;
 /**
  * @author nk
  */
-class HttpMethodTest {
+class RealServerTest {
 
   public static void main(String... args) throws IOException {
     pureHttpClient();
