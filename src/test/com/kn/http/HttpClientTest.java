@@ -18,15 +18,6 @@ public class HttpClientTest {
     client = new HttpClient();
   }
 
-  @Test()
-  public void httpMethodIsNotSet() {
-    try {
-      new Request.Builder().url("http://google.com").build();
-      fail("Expected " + IllegalStateException.class.getName() + ", http method is not set");
-    } catch (IllegalStateException expected) {
-    }
-  }
-
   @Test
   public void urlIsNotSet() throws Exception {
     try {

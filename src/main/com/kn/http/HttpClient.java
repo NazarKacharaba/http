@@ -165,6 +165,10 @@ public final class HttpClient {
       private StringBuilder paramQuery;
       private final Map<String, String> headers = new HashMap<>();
 
+      public Builder() {
+        this.method = HttpMethod.GET;
+      }
+
       public Builder url(String url) {
         this.baseUrl = url;
         return this;
