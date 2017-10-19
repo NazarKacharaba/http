@@ -4,11 +4,7 @@ import com.kn.http.HttpClient.Request;
 import com.kn.http.HttpClient.Response;
 import java.io.IOException;
 import java.lang.ref.WeakReference;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.LinkedBlockingQueue;
-import java.util.concurrent.ThreadFactory;
-import java.util.concurrent.ThreadPoolExecutor;
-import java.util.concurrent.TimeUnit;
+import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicInteger;
 
 /**
@@ -33,26 +29,35 @@ public final class NetworkDispatcher {
     this.httpClient = httpClient;
   }
 
-  public Call execute(final Request request, Callback<Response> callback) {
+  public Cancelable execute(final Request request, Callback<Response> callback) {
     WeakReference<Callback<Response>> weakReference = new WeakReference<>(callback);
 
-    CancelableTask runnable = createRunnable(request, weakReference);
-
-    service.execute(runnable);
-
-    return new Call(runnable);
+    CancelableTask task = createRunnable(request, weakReference);
+    task.future = service.submit(task);
+    return task;
   }
 
   private final CancelableTask createRunnable(final Request request,
       final WeakReference<Callback<Response>> callback) {
     return new CancelableTask() {
+      HttpClient.Call call;
+
       @Override public void run() {
         if (isCanceled) return;
 
         try {
-          success(httpClient.execute(request));
+          call = httpClient.call(request);
+          success(call.execute());
         } catch (IOException e) {
           failure(e);
+        }
+      }
+
+      @Override
+      public void cancel() {
+        super.cancel();
+        if (!call.isExecuted()) {
+          call.cancel();
         }
       }
 
@@ -75,11 +80,14 @@ public final class NetworkDispatcher {
   }
 
   /** Cancelable runnable */
-  static abstract class CancelableTask implements Runnable {
+  abstract class CancelableTask implements Runnable, Cancelable {
     volatile boolean isCanceled; //https://stackoverflow.com/a/3787435/1934509
+    Future future;
 
+    @Override
     public void cancel() {
-      this.isCanceled = true;
+      isCanceled = true;
+      future.cancel(false);
     }
   }
 
@@ -90,18 +98,8 @@ public final class NetworkDispatcher {
     void onFailure(Exception e);
   }
 
-  /** Represent request call that can be canceled */
-  public final static class Call {
-
-    private final CancelableTask runnable;
-
-    private Call(CancelableTask runnable) {
-      this.runnable = runnable;
-    }
-
-    /** Cancel current http request */
-    public void cancel() {
-      runnable.cancel();
-    }
+  public interface Cancelable {
+    void cancel();
   }
+
 }

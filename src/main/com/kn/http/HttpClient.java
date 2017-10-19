@@ -11,7 +11,6 @@ import java.io.UnsupportedEncodingException;
 import java.net.HttpURLConnection;
 import java.net.MalformedURLException;
 import java.net.URL;
-import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -63,21 +62,51 @@ public final class HttpClient {
     this.connectTimeout = timeout;
   }
 
-  public Response execute(Request request) throws IOException {
-    HttpURLConnection connection = (HttpURLConnection) request.url.openConnection();
-    connection.setRequestMethod(request.method.methodName());
-    connection.setReadTimeout(readTimeout);
-    connection.setConnectTimeout(connectTimeout);
-    copyHeaders(connection, request.headers);
+  public Call call(Request request) {
 
-    switch (request.method) {
-      case POST:
-        return doPost(connection, request);
-      case GET:
-        return doGet(connection);
-      default:
-        throw new UnsupportedOperationException("Currently only GET and POST is supported");
-    }
+    return new Call() {
+      public HttpURLConnection connection;
+
+      @Override
+      public Response execute() throws IOException {
+        connection = (HttpURLConnection) request.url.openConnection();
+        connection.setRequestMethod(request.method.methodName());
+        connection.setReadTimeout(readTimeout);
+        connection.setConnectTimeout(connectTimeout);
+        copyHeaders(connection, request.headers);
+
+        Response response = null;
+
+        switch (request.method) {
+          case POST:
+            response = doPost(connection, request);
+            break;
+          case GET:
+            response = doGet(connection);
+            break;
+        }
+
+        return response;
+      }
+
+      @Override
+      public boolean isExecuted() {
+        return connection != null;
+      }
+
+      @Override
+      public void cancel() {
+        if (connection == null) {
+          throw new IllegalStateException("ttp call has not been executed");
+        }
+        // TODO what should we do to in order to say that call is really cancelled?
+        // or another question, is it possible to cancel already started connection in a proper way?
+        // if we are waiting for server to establish connection, can we cancel that?
+        // seems that HttpURLConnection does not have such functionality
+        connection.disconnect();
+      }
+    };
+
   }
 
   private final Response doGet(HttpURLConnection connection) throws IOException {
@@ -122,7 +151,7 @@ public final class HttpClient {
     }
   }
 
-  //TODO find out which stream better to provide to user
+  //TODO find out which stream is better to provide to user
   private InputStream inputStream(HttpURLConnection connection) throws IOException {
     InputStream stream;
     if (connection.getResponseCode() < 400) {
@@ -134,10 +163,10 @@ public final class HttpClient {
       }
     }
 
-    if (!"gzip".equals(connection.getHeaderField("Content-Encoding"))) {
-      return stream;
-    } else {
+    if ("gzip".equals(connection.getHeaderField("Content-Encoding"))) {
       return new GZIPInputStream(stream);
+    } else {
+      return stream;
     }
   }
 
@@ -147,6 +176,14 @@ public final class HttpClient {
         connection.setRequestProperty(entry.getKey(), entry.getValue());
       }
     }
+  }
+
+  public interface Call {
+    Response execute() throws IOException;
+
+    boolean isExecuted();
+
+    void cancel();
   }
 
   public final static class Request {
@@ -223,7 +260,7 @@ public final class HttpClient {
       }
 
       public Request build() {
-        checkCondition();
+        checkArgs();
 
         Request request = new Request();
         URL url = null;
@@ -246,7 +283,7 @@ public final class HttpClient {
         return "?" + paramQuery.toString();
       }
 
-      private void checkCondition() {
+      private void checkArgs() {
         if (method != HttpMethod.POST && stream != null) {
           throw new IllegalStateException("Currently only POST supports body");
         }
@@ -268,13 +305,13 @@ public final class HttpClient {
     private Response() {
     }
 
-    public List<String> getHeaderFields(String headerName) {
+    public List<String> headers(String headerName) {
       List<String> list = headers.get(headerName);
       return list != null ? list : emptyList();
     }
 
-    public String getHeaderField(String headerName) {
-      List<String> headerFields = getHeaderFields(headerName);
+    public String header(String headerName) {
+      List<String> headerFields = headers(headerName);
       if (!headerFields.isEmpty()) return headerFields.get(0);
       return null;
     }
@@ -284,7 +321,7 @@ public final class HttpClient {
     }
 
     public boolean isOk() {
-      return code() == 200;
+      return code == 200;
     }
 
     public String string() {
@@ -324,7 +361,7 @@ public final class HttpClient {
     }
 
     public String charset() {
-      String contentType = getHeaderField("Content-Type");
+      String contentType = header("Content-Type");
       if (contentType == null || contentType.length() == 0) return null;
       int postSemi = contentType.indexOf(';') + 1;
       if (postSemi > 0 && postSemi == contentType.length()) return null;

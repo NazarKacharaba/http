@@ -24,7 +24,7 @@ class RealServerTest {
         .url("https://api.github.com/repos/zikil/http/contributors")
         .build();
 
-    Response response = client.execute(request);
+    Response response = client.call(request).execute();
     if (response.isOk()) {
       System.out.println("Response " + response.string());
     } else {
@@ -70,7 +70,7 @@ class RealServerTest {
         .url("http://httpbin.org/delay/3")
         .build();
 
-    Response response = client.execute(request);
+    Response response = client.call(request).execute();
     if (response.isOk()) {
       System.out.println("Response " + response.string());
     } else {
@@ -86,7 +86,7 @@ class RealServerTest {
         .url("http://httpbin.org/redirect/6")
         .build();
 
-    Response response = client.execute(request);
+    Response response = client.call(request).execute();
     if (response.isOk()) {
       System.out.println("Response " + response.string());
     } else {
