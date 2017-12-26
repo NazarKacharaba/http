@@ -11,13 +11,12 @@ import java.io.UnsupportedEncodingException;
 import java.net.HttpURLConnection;
 import java.net.MalformedURLException;
 import java.net.URL;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.zip.GZIPInputStream;
-
-import static java.util.Collections.emptyList;
 
 /**
  * Very very simple HttpClient
@@ -28,7 +27,7 @@ import static java.util.Collections.emptyList;
 public final class HttpClient {
 
   public enum HttpMethod {
-    POST("POST"), GET("GET");
+    POST("POST"), GET("GET"), PUT("PUT"), PATCH("PATCH");
 
     private final String method;
 
@@ -62,13 +61,12 @@ public final class HttpClient {
     this.connectTimeout = timeout;
   }
 
-  public Call call(Request request) {
+  public Call call(final Request request) {
 
     return new Call() {
       public HttpURLConnection connection;
 
-      @Override
-      public Response execute() throws IOException {
+      @Override public Response execute() throws IOException {
         connection = (HttpURLConnection) request.url.openConnection();
         connection.setRequestMethod(request.method.methodName());
         connection.setReadTimeout(readTimeout);
@@ -78,8 +76,10 @@ public final class HttpClient {
         Response response = null;
 
         switch (request.method) {
+          case PUT:
+          case PATCH:
           case POST:
-            response = doPost(connection, request);
+            response = doPost(connection, request, request.method.method);
             break;
           case GET:
             response = doGet(connection);
@@ -89,15 +89,13 @@ public final class HttpClient {
         return response;
       }
 
-      @Override
-      public boolean isExecuted() {
+      @Override public boolean isExecuted() {
         return connection != null;
       }
 
-      @Override
-      public void cancel() {
+      @Override public void cancel() {
         if (connection == null) {
-          throw new IllegalStateException("ttp call has not been executed");
+          throw new IllegalStateException("http call has not been executed");
         }
         // TODO what should we do to in order to say that call is really cancelled?
         // or another question, is it possible to cancel already started connection in a proper way?
@@ -106,7 +104,6 @@ public final class HttpClient {
         connection.disconnect();
       }
     };
-
   }
 
   private final Response doGet(HttpURLConnection connection) throws IOException {
@@ -127,8 +124,10 @@ public final class HttpClient {
     }
   }
 
-  private final Response doPost(HttpURLConnection connection, Request request) throws IOException {
-    connection.setDoOutput(true);
+  private final Response doPost(HttpURLConnection connection, Request request, String method)
+      throws IOException {
+    connection.setDoOutput(request.stream != null);
+    connection.setRequestMethod(method);
 
     OutputStream outputStream = null;
     InputStream inputStream = null;
@@ -243,7 +242,7 @@ public final class HttpClient {
         return this;
       }
 
-      public Builder params(HashMap<String, String> params) {
+      public Builder params(Map<String, String> params) {
         if (params == null || params.isEmpty()) return this;
         paramQuery = new StringBuilder();
 
@@ -284,8 +283,8 @@ public final class HttpClient {
       }
 
       private void checkArgs() {
-        if (method != HttpMethod.POST && stream != null) {
-          throw new IllegalStateException("Currently only POST supports body");
+        if (method == HttpMethod.GET && stream != null) {
+          throw new IllegalStateException("GET method can not have body");
         }
         if (baseUrl == null) {
           throw new IllegalStateException("Url must be set");
@@ -307,7 +306,7 @@ public final class HttpClient {
 
     public List<String> headers(String headerName) {
       List<String> list = headers.get(headerName);
-      return list != null ? list : emptyList();
+      return list != null ? list : Collections.<String>emptyList();
     }
 
     public String header(String headerName) {
@@ -326,13 +325,16 @@ public final class HttpClient {
 
     public String string() {
       ByteArrayOutputStream output = new ByteArrayOutputStream();
-      copy(buffer(), output);
-      String charset = charset();
-      if (charset == null) return output.toString();
+      BufferedInputStream input = buffer();
       try {
-        return output.toString(charset);
+        copy(input, output);
+        String charset = charset();
+        return charset == null ? output.toString() : output.toString(charset);
       } catch (IOException e) {
         rethrow(e);
+      } finally {
+        closeQuietly(input);
+        closeQuietly(output);
       }
       return null;
     }
@@ -342,9 +344,17 @@ public final class HttpClient {
     }
 
     public byte[] bytes() {
-      ByteArrayOutputStream output = new ByteArrayOutputStream(contentLength());
-      copy(buffer(), output);
-      return output.toByteArray();
+      ByteArrayOutputStream output = null;
+      BufferedInputStream input = null;
+      try {
+        output = new ByteArrayOutputStream(contentLength());
+        input = buffer();
+        copy(input, output);
+        return output.toByteArray();
+      } finally {
+        closeQuietly(input);
+        closeQuietly(output);
+      }
     }
 
     public BufferedInputStream buffer() {
@@ -406,9 +416,8 @@ public final class HttpClient {
     }
   }
 
-  static RuntimeException rethrow(Throwable throwable) {
-    sneakyThrow0(throwable);
-    throw null;
+  static void rethrow(Throwable throwable) {
+    HttpClient.<RuntimeException>sneakyThrow0(throwable);
   }
 
   static <T extends Throwable> void sneakyThrow0(Throwable throwable) throws T {

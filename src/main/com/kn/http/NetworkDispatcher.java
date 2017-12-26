@@ -2,8 +2,9 @@ package com.kn.http;
 
 import com.kn.http.HttpClient.Request;
 import com.kn.http.HttpClient.Response;
-import java.io.IOException;
-import java.lang.ref.WeakReference;
+
+import java.util.ArrayDeque;
+import java.util.Deque;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicInteger;
 
@@ -12,16 +13,20 @@ import java.util.concurrent.atomic.AtomicInteger;
  */
 
 public final class NetworkDispatcher {
-  final HttpClient httpClient;
-  // TODO does not work properly when request's size become more than LinkedBlockingQueue's size
-  private final ExecutorService service =
-      new ThreadPoolExecutor(0, 6, 60, TimeUnit.SECONDS, new LinkedBlockingQueue<>(6),
-          new ThreadFactory() {
+  static final int MAX_CONCURRENT_CONNECTION = 2;
+
+  private final Deque<CancelableTask> running = new ArrayDeque<>();
+  private final Deque<CancelableTask> waiting = new ArrayDeque<>();
+  private final HttpClient httpClient;
+
+  ThreadPoolExecutor executorService =
+          new ThreadPoolExecutor(0, Integer.MAX_VALUE, 60, TimeUnit.SECONDS,
+                  new SynchronousQueue<Runnable>(), new ThreadFactory() {
             private final AtomicInteger poolNumber = new AtomicInteger(1);
 
-            @Override public Thread newThread(Runnable runnable) {
-              return new Thread(runnable,
-                  "network-dispatcher-thread-" + poolNumber.getAndIncrement());
+            @Override
+            public Thread newThread(Runnable runnable) {
+              return new Thread(runnable, "network-dispatcher-thread-" + poolNumber.getAndIncrement());
             }
           });
 
@@ -30,68 +35,105 @@ public final class NetworkDispatcher {
   }
 
   public Cancelable execute(final Request request, Callback<Response> callback) {
-    WeakReference<Callback<Response>> weakReference = new WeakReference<>(callback);
+    CancelableTask task = createTask(request, callback);
+    if (running.size() < MAX_CONCURRENT_CONNECTION) {
+      running.add(task);
+      task.future = executorService.submit(task);
+    } else {
+      waiting.add(task);
+    }
 
-    CancelableTask task = createRunnable(request, weakReference);
-    task.future = service.submit(task);
     return task;
   }
 
-  private final CancelableTask createRunnable(final Request request,
-      final WeakReference<Callback<Response>> callback) {
-    return new CancelableTask() {
+  private CancelableTask createTask(Request request, Callback<Response> callback) {
+    return new CancelableTask(request, callback) {
       HttpClient.Call call;
 
-      @Override public void run() {
+      @Override
+      public void run() {
         if (isCanceled) return;
 
+        Response response = null;
+        Exception exception = null;
         try {
           call = httpClient.call(request);
-          success(call.execute());
-        } catch (IOException e) {
-          failure(e);
+          response = call.execute();
+        } catch (Exception e) {
+          exception = e;
+        } finally {
+          notifyFinished();
+        }
+
+        if (response != null) {
+          success(response);
+        } else if (exception != null) {
+          failure(exception);
         }
       }
 
       @Override
       public void cancel() {
-        super.cancel();
-        if (!call.isExecuted()) {
+        if (call != null && !call.isExecuted()) {
           call.cancel();
         }
+        super.cancel();
       }
 
       private void success(Response response) {
-        if (!isCanceled && callback.get() != null) {
-          try {
-            callback.get().onSuccess(response);
-          } catch (Exception e) {
-            failure(e);
-          }
+        if (!isCanceled && callback != null) {
+          callback.onSuccess(response);
         }
       }
 
       private void failure(Exception e) {
-        if (!isCanceled && callback.get() != null) {
-          callback.get().onFailure(e);
+        if (!isCanceled && callback != null) {
+          callback.onFailure(e);
         }
+      }
+
+      private void notifyFinished() {
+        running.remove(this);
+        if (waiting.isEmpty()) return;
+
+        CancelableTask nextTask = waiting.pop();
+        running.add(nextTask);
+        nextTask.future = executorService.submit(nextTask);
       }
     };
   }
 
-  /** Cancelable runnable */
+  /**
+   * Cancelable runnable
+   */
   abstract class CancelableTask implements Runnable, Cancelable {
     volatile boolean isCanceled; //https://stackoverflow.com/a/3787435/1934509
     Future future;
+    final Callback<Response> callback;
+    final Request request;
+
+    private CancelableTask(Request request, Callback<Response> callback) {
+      this.request = request;
+      this.callback = callback;
+    }
 
     @Override
     public void cancel() {
+      if (isCanceled) return;
       isCanceled = true;
-      future.cancel(false);
+
+      if (!waiting.remove(this)) {
+        running.remove(this);
+      }
+      if (future != null) {
+        future.cancel(false);
+      }
     }
   }
 
-  /** Callback for response */
+  /**
+   * Callback for response
+   */
   public interface Callback<Response> {
     void onSuccess(Response response);
 
@@ -101,5 +143,4 @@ public final class NetworkDispatcher {
   public interface Cancelable {
     void cancel();
   }
-
 }
