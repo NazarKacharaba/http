@@ -2,10 +2,14 @@ package com.kn.http;
 
 import com.kn.http.HttpClient.Request;
 import com.kn.http.HttpClient.Response;
-
+import java.io.IOException;
 import java.util.ArrayDeque;
 import java.util.Deque;
-import java.util.concurrent.*;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.SynchronousQueue;
+import java.util.concurrent.ThreadFactory;
+import java.util.concurrent.ThreadPoolExecutor;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 
 /**
@@ -15,30 +19,32 @@ import java.util.concurrent.atomic.AtomicInteger;
 public final class NetworkDispatcher {
   static final int MAX_CONCURRENT_CONNECTION = 2;
 
+  private final Object LOCK = new Object();
   private final Deque<CancelableTask> running = new ArrayDeque<>();
   private final Deque<CancelableTask> waiting = new ArrayDeque<>();
   private final HttpClient httpClient;
 
-  ThreadPoolExecutor executorService =
-          new ThreadPoolExecutor(0, Integer.MAX_VALUE, 60, TimeUnit.SECONDS,
-                  new SynchronousQueue<Runnable>(), new ThreadFactory() {
-            private final AtomicInteger poolNumber = new AtomicInteger(1);
+  private ExecutorService executorService =
+      new ThreadPoolExecutor(0, Integer.MAX_VALUE, 60, TimeUnit.SECONDS,
+          new SynchronousQueue<Runnable>(), new ThreadFactory() {
+        private final AtomicInteger poolNumber = new AtomicInteger(1);
 
-            @Override
-            public Thread newThread(Runnable runnable) {
-              return new Thread(runnable, "network-dispatcher-thread-" + poolNumber.getAndIncrement());
-            }
-          });
+        @Override public Thread newThread(Runnable runnable) {
+          return new Thread(runnable, "network-dispatcher-thread-" + poolNumber.getAndIncrement());
+        }
+      });
 
   public NetworkDispatcher(HttpClient httpClient) {
     this.httpClient = httpClient;
   }
 
   public Cancelable execute(final Request request, Callback<Response> callback) {
+    if (request == null) throw new NullPointerException("Request is null");
+
     CancelableTask task = createTask(request, callback);
     if (running.size() < MAX_CONCURRENT_CONNECTION) {
       running.add(task);
-      task.future = executorService.submit(task);
+      executorService.execute(task);
     } else {
       waiting.add(task);
     }
@@ -50,31 +56,26 @@ public final class NetworkDispatcher {
     return new CancelableTask(request, callback) {
       HttpClient.Call call;
 
-      @Override
-      public void run() {
+      @Override public void run() {
         if (isCanceled) return;
 
         Response response = null;
-        Exception exception = null;
         try {
           call = httpClient.call(request);
           response = call.execute();
-        } catch (Exception e) {
-          exception = e;
-        } finally {
-          notifyFinished();
+        } catch (IOException e) {
+          failure(e);
         }
 
         if (response != null) {
           success(response);
-        } else if (exception != null) {
-          failure(exception);
         }
+
+        notifyFinished();
       }
 
-      @Override
-      public void cancel() {
-        if (call != null && !call.isExecuted()) {
+      @Override public void cancel() {
+        if (call != null && call.isExecuted()) {
           call.cancel();
         }
         super.cancel();
@@ -86,7 +87,7 @@ public final class NetworkDispatcher {
         }
       }
 
-      private void failure(Exception e) {
+      private void failure(IOException e) {
         if (!isCanceled && callback != null) {
           callback.onFailure(e);
         }
@@ -94,21 +95,24 @@ public final class NetworkDispatcher {
 
       private void notifyFinished() {
         running.remove(this);
-        if (waiting.isEmpty()) return;
+        CancelableTask nextTask;
 
-        CancelableTask nextTask = waiting.pop();
+        // make safe concurrent mutation of 'waiting' deque
+        synchronized (LOCK) {
+          if (waiting.isEmpty()) return;
+
+          nextTask = waiting.pop();
+        }
+
         running.add(nextTask);
-        nextTask.future = executorService.submit(nextTask);
+        executorService.execute(nextTask);
       }
     };
   }
 
-  /**
-   * Cancelable runnable
-   */
+  /** Cancelable runnable */
   abstract class CancelableTask implements Runnable, Cancelable {
     volatile boolean isCanceled; //https://stackoverflow.com/a/3787435/1934509
-    Future future;
     final Callback<Response> callback;
     final Request request;
 
@@ -117,27 +121,21 @@ public final class NetworkDispatcher {
       this.callback = callback;
     }
 
-    @Override
-    public void cancel() {
+    @Override public void cancel() {
       if (isCanceled) return;
       isCanceled = true;
 
       if (!waiting.remove(this)) {
         running.remove(this);
       }
-      if (future != null) {
-        future.cancel(false);
-      }
     }
   }
 
-  /**
-   * Callback for response
-   */
+  /** Callback for response */
   public interface Callback<Response> {
     void onSuccess(Response response);
 
-    void onFailure(Exception e);
+    void onFailure(IOException e);
   }
 
   public interface Cancelable {

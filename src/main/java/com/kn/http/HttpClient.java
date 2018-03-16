@@ -39,6 +39,20 @@ public final class HttpClient {
       return method;
     }
 
+    private static HttpMethod from(String string) {
+      switch (string) {
+        case "POST":
+          return HttpMethod.POST;
+        case "PUT":
+          return HttpMethod.PUT;
+        case "PATCH":
+          return HttpMethod.PATCH;
+        case "GET":
+          return HttpMethod.GET;
+      }
+      throw new IllegalArgumentException(string);
+    }
+
   }
 
   private int readTimeout = 1000 * 20; // default 20 sec
@@ -194,6 +208,10 @@ public final class HttpClient {
     private Request() {
     }
 
+    public String url() {
+      return url.toString();
+    }
+
     public static class Builder {
       private String baseUrl;
       private HttpMethod method;
@@ -221,14 +239,11 @@ public final class HttpClient {
       }
 
       public Builder body(String value) {
-        byte[] bytes = null;
         try {
-          bytes = value.getBytes("UTF-8");
+          stream = new StringInputStream(value);
         } catch (UnsupportedEncodingException e) {
           rethrow(e);
         }
-
-        stream = new ByteArrayInputStream(bytes);
         return this;
       }
 
@@ -293,6 +308,103 @@ public final class HttpClient {
           throw new IllegalStateException("Http method must be set");
         }
       }
+    }
+
+    @Override public String toString() {
+      StringBuilder builder = new StringBuilder();
+      builder.append(method)
+          .append(" ")
+          .append(url.getPath())
+          .append(" ")
+          .append(url.getProtocol())
+          .append("\n");
+
+      builder.append("Host").append(":").append(url.getHost()).append("\n");
+      for (Map.Entry<String, String> entry : headers.entrySet()) {
+        builder.append(entry.getKey()).append(":").append(entry.getValue()).append("\n");
+      }
+
+      String body;
+      if (method != HttpMethod.GET && (body = getBody()) != null) {
+        builder.append("\n").append(body).append("\n");
+      }
+
+      builder.deleteCharAt(builder.length() - 1);
+      return builder.toString();
+    }
+
+    private String getBody() {
+      if (stream == null) {
+        return null;
+      }
+      if (!(stream instanceof StringInputStream)) {
+        return "<--stream of bytes-->";
+      }
+
+      try {
+        // TODO, this is bad. Do not call toString while stream is being used by another thread ;(
+        stream.reset();
+        byte[] bytes = new byte[stream.available()];
+        stream.read(bytes);
+        return new String(bytes, "utf-8");
+      } catch (Exception ignored) {
+      } finally {
+        try {
+          stream.reset();
+        } catch (IOException ignored) {
+        }
+      }
+
+      return "<--stream of bytes-->";
+    }
+
+    public static Request fromString(String string) {
+      Request.Builder builder = new Request.Builder();
+      String[] split = string.split("\\r?\\n");
+      String firstLine = split[0];
+      int firstSpace = firstLine.indexOf(' ');
+      String method = firstLine.substring(0, firstSpace);
+      String path = "";
+      String schema;
+
+      if (firstLine.charAt(firstSpace + 1) != ' ') {
+        int secondSpace = firstLine.indexOf(' ', firstSpace + 1);
+        path = firstLine.substring(firstSpace + 1, secondSpace);
+        schema = firstLine.substring(secondSpace + 1);
+      } else {
+        schema = firstLine.substring(firstSpace + 1);
+      }
+
+      String host = "";
+      int bodyStartLine = -1;
+      for (int i = 1; i < split.length; i++) {
+        String line = split[i];
+        if (line == null || line.length() == 0) {
+          bodyStartLine = i;
+          break;
+        }
+        String[] header = line.split(":");
+
+        // we do not need host in real request headers
+        if (header[0].equals("Host")) {
+          host = header[1].trim();
+        } else {
+          builder.header(header[0], header[1]);
+        }
+      }
+
+      builder.url(schema + "://" + host + path);
+      builder.method(HttpMethod.from(method));
+
+      if (bodyStartLine != -1) {
+        StringBuilder b = new StringBuilder();
+        for (int i = bodyStartLine; i < split.length; i++) {
+          b.append(split[i]);
+        }
+        builder.body(b.toString());
+      }
+
+      return builder.build();
     }
   }
 
@@ -391,6 +503,12 @@ public final class HttpClient {
         return charset;
       }
       return null;
+    }
+  }
+
+  static class StringInputStream extends ByteArrayInputStream {
+    public StringInputStream(String string) throws UnsupportedEncodingException {
+      super(string.getBytes("UTF-8"));
     }
   }
 
