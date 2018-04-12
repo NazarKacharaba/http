@@ -126,6 +126,7 @@ public final class HttpClient {
     InputStream inputStream = null;
     try {
       Response response = new Response();
+      response.connection = connection;
       response.code = connection.getResponseCode();
       response.inputStream = inputStream = inputStream(connection);
       response.headers = connection.getHeaderFields();
@@ -151,6 +152,7 @@ public final class HttpClient {
       copy(request.stream, outputStream);
 
       Response response = new Response();
+      response.connection = connection;
       response.code = connection.getResponseCode();
       response.inputStream = inputStream = inputStream(connection);
       response.headers = connection.getHeaderFields();
@@ -412,6 +414,7 @@ public final class HttpClient {
     private Map<String, List<String>> headers;
     private int code;
     private InputStream inputStream;
+    private HttpURLConnection connection;
 
     private Response() {
     }
@@ -503,6 +506,11 @@ public final class HttpClient {
         return charset;
       }
       return null;
+    }
+
+    public void close() {
+      closeQuietly(inputStream);
+      connection.disconnect();
     }
   }
 
